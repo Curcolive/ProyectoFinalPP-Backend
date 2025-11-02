@@ -85,12 +85,8 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'proyectofinal_db',   # El nombre de tu BD en phpMyAdmin
-        'USER': 'root',                # El usuario por defecto de XAMPP
-        'PASSWORD': '',              # La contraseña por defecto de XAMPP (vacía)
-        'HOST': 'localhost',             # O '127.0.0.1'
-        'PORT': '3306',                # Puerto por defecto de MySQL
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -130,6 +126,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -140,6 +137,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Orígenes permitidos (tu app de React)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000", # El puerto donde corre React
+    "https://proyecto-final-pp-front.vercel.app"
 ]
 
 # Opcional: Si quieres permitir que React envíe cookies (para la sesión del admin)
