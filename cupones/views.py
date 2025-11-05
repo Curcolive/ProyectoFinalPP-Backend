@@ -1,11 +1,17 @@
+from django.http import HttpResponse # <-- Solo necesitas HttpResponse
+from django.shortcuts import redirect, get_object_or_404
+# --- IMPORTA TU NUEVO GENERADOR ---
+from .pdf_generator import generate_pago_facil_pdf
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from django.contrib.auth.models import User
-from django.shortcuts import get_object_or_404
-from django.db import IntegrityError # <-- Para atrapar errores de borrado
-from django.db.models import Count, Case, When, Value, Q # <-- Para estadísticas
+from django.db import IntegrityError 
+from django.db.models import Count, Q 
+from rest_framework import generics 
+from .serializers import PasarelaPagoSimpleSerializer 
 import traceback
 
 # Importaciones de tus modelos y serializers
@@ -15,15 +21,18 @@ from .serializers import (
     GenerarCuponSerializer,
     CuponPagoGeneradoSerializer,
     CuponPagoListSerializer,
-    MyTokenObtainPairSerializer, # Para login
-    EstadoCuponSerializer,      # Para CRUD de EstadoCupon
+    MyTokenObtainPairSerializer, 
+    EstadoCuponSerializer,       
+    PasarelaPagoSerializer,
     EstadoCuponSimpleSerializer
 )
 
 # Otras importaciones de Python/Django
 from django.utils import timezone
 from datetime import timedelta
-from django.db import transaction # Para asegurar la integridad de la BD
+from django.db import transaction 
+# --- VISTA PERSONALIZADA PARA OBTENER TOKEN ---
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 
 class ListaCuotasPendientesAPI(APIView):
@@ -36,7 +45,7 @@ class ListaCuotasPendientesAPI(APIView):
                 nombre__in=['Pendiente', 'Vencida']
             )
             if not estados_pendientes.exists():
-                 return Response({"error": "Estados 'Pendiente' o 'Vencida' no encontrados."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return Response({"error": "Estados 'Pendiente' o 'Vencida' no encontrados."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({"error": f"Error al buscar estados: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -46,7 +55,7 @@ class ListaCuotasPendientesAPI(APIView):
                 estado_cuota__in=estados_pendientes
             ).order_by('fecha_vencimiento')
         except Exception as e:
-             return Response({"error": f"Error al buscar cuotas: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Error al buscar cuotas: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         try:
             serializer = CuotaSerializer(cuotas, many=True)
@@ -68,8 +77,10 @@ class GenerarCuponAPI(APIView):
 
         cuotas_ids = serializer_in.validated_data['cuotas_ids']
         idempotency_key = serializer_in.validated_data['idempotency_key']
+        pasarela_id = serializer_in.validated_data['pasarela_id']
 
         try:
+            # 1. Lógica de Idempotencia (sin cambios)
             cupon_existente = CuponPago.objects.filter(idempotency_key=idempotency_key).first()
             if cupon_existente:
                 serializer_out = CuponPagoGeneradoSerializer(cupon_existente)
@@ -84,24 +95,43 @@ class GenerarCuponAPI(APIView):
                 return Response({"error": "Una o más cuotas no se encontraron o no pertenecen a este usuario."}, status=status.HTTP_404_NOT_FOUND)
 
             estado_activo = EstadoCupon.objects.get(nombre="Activo")
-            cuotas_con_cupon_activo = cuotas_a_pagar.filter(cupones__estado_cupon=estado_activo)
+            pasarela_obj = get_object_or_404(PasarelaPago, id=pasarela_id)
 
-            if cuotas_con_cupon_activo.exists():
-                return Response({"error": "Una o más de las cuotas seleccionadas ya tienen un cupón activo generado."}, status=status.HTTP_409_CONFLICT)
+            # 2. Lógica de Cupón Activo Existente (sin cambios)
+            cupon_existente_activo = CuponPago.objects.filter(
+                estado_cupon=estado_activo,
+                cuotas_incluidas__in=cuotas_a_pagar
+            ).distinct().first()
 
+            if cupon_existente_activo:
+                serializer_out = CuponPagoGeneradoSerializer(cupon_existente_activo)
+                return Response(
+                    {
+                        "error": "Ya existe un cupón activo para una o más de estas cuotas.",
+                        "cupon_existente": serializer_out.data
+                    }, 
+                    status=status.HTTP_409_CONFLICT
+                )
+
+            # 3. Creación del Cupón (sin cambios)
             monto_total = sum(cuota.monto for cuota in cuotas_a_pagar)
-            pasarela_pf = PasarelaPago.objects.get(nombre="Pago Fácil")
             vencimiento = timezone.now().date() + timedelta(days=7)
 
             nuevo_cupon = CuponPago.objects.create(
                 alumno=request.user,
                 estado_cupon=estado_activo,
-                pasarela=pasarela_pf,
+                pasarela=pasarela_obj,
                 monto_total=monto_total,
                 fecha_vencimiento=vencimiento,
-                idempotency_key=idempotency_key,
-                url_pdf='http://localhost:3000/cupon_ejemplo.pdf' # URL simulada
+                idempotency_key=idempotency_key
             )
+            
+            # --- ¡AQUÍ ESTÁ LA CORRECCIÓN! ---
+            # Cambiamos el prefijo de '/api/' a '/cupones/'
+            nuevo_cupon.url_pdf = f'/cupones/cupon/{nuevo_cupon.id}/descargar/'
+            # --- FIN DE LA CORRECCIÓN ---
+            
+            nuevo_cupon.save(update_fields=['url_pdf'])
 
             for cuota in cuotas_a_pagar:
                 CuponPagoCuota.objects.create(
@@ -116,7 +146,7 @@ class GenerarCuponAPI(APIView):
         except EstadoCupon.DoesNotExist:
             return Response({"error": "Estado 'Activo' no configurado en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except PasarelaPago.DoesNotExist:
-            return Response({"error": "Pasarela 'Pago Fácil' no configurada en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             return Response({"error": "La pasarela seleccionada no existe."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             print(traceback.format_exc())
             return Response({"error": f"Error inesperado en el servidor: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -137,9 +167,59 @@ class HistorialCuponesAPI(APIView):
             print(traceback.format_exc())
             return Response({"error": f"Error inesperado al buscar historial: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class AnularCuponAlumnoAPI(APIView):
+    """
+    API para que un ALUMNO anule su propio cupón "Activo".
+    """
+    permission_classes = [IsAuthenticated] # Solo usuarios logueados
 
-# --- VISTA PERSONALIZADA PARA OBTENER TOKEN ---
-from rest_framework_simplejwt.views import TokenObtainPairView
+    @transaction.atomic
+    def patch(self, request, pk): # 'pk' es el ID del cupón a anular
+        try:
+            # 1. Obtenemos todos los objetos necesarios primero
+            estado_anulado = EstadoCupon.objects.get(nombre='Anulado')
+            estado_activo = EstadoCupon.objects.get(nombre='Activo')
+            
+            # Usamos .get(pk=pk) para poder capturar el error si no existe
+            cupon = CuponPago.objects.select_related('estado_cupon').get(pk=pk)
+
+        except EstadoCupon.DoesNotExist:
+            return Response({"error": "Estados 'Anulado' o 'Activo' no configurados en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except CuponPago.DoesNotExist:
+            return Response({"error": "El cupón no existe."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            # Captura cualquier otro error al buscar
+            print(traceback.format_exc())
+            return Response({"error": f"Error inesperado al buscar datos: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # --- Si encontramos todo, procedemos con la lógica ---
+        try:
+            # 3. VALIDACIÓN DE SEGURIDAD 1: Propietario
+            if cupon.alumno != request.user:
+                return Response({"error": "No tienes permiso para anular este cupón."}, status=status.HTTP_403_FORBIDDEN)
+
+            # 4. VALIDACIÓN DE LÓGICA DE NEGOCIO: Estado
+            # El alumno solo puede anular cupones que estén 'Activos'
+            if cupon.estado_cupon != estado_activo:
+                if cupon.estado_cupon == estado_anulado:
+                    return Response({"mensaje": "Este cupón ya se encuentra anulado."}, status=status.HTTP_200_OK)
+                
+                # No se puede anular un cupón Pagado o Vencido
+                return Response({"error": f"No se puede anular un cupón que no está 'Activo'. Estado actual: {cupon.estado_cupon.nombre}."}, status=status.HTTP_409_CONFLICT)
+
+            # 5. Ejecutar la anulación
+            cupon.estado_cupon = estado_anulado
+            cupon.motivo_anulacion = "Anulado por el alumno." # Motivo automático
+            cupon.save()
+            
+            # 6. Devolver éxito
+            # 204 No Content es la respuesta estándar para un PATCH/DELETE exitoso
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        except Exception as e:
+            # Este 'except' es para errores DURANTE la lógica de anulación
+            print(traceback.format_exc())
+            return Response({"error": f"Error inesperado al procesar la anulación: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class MyTokenObtainPairView(TokenObtainPairView):
     """ Usa el serializer personalizado para añadir 'username' y 'is_staff' """
@@ -251,6 +331,35 @@ class EstadoCuponViewSet(viewsets.ModelViewSet):
             )
 # --- FIN VIEWSET ---
 
+class PasarelaPagoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para CRUD de PasarelaPago.
+    Maneja IntegrityError al eliminar.
+    """
+    queryset = PasarelaPago.objects.all().order_by('id') # <-- CAMBIO
+    serializer_class = PasarelaPagoSerializer           # <-- CAMBIO
+    permission_classes = [IsAdminUser]
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object() # Obtiene el objeto a eliminar
+        try:
+            # Intenta eliminar
+            instance.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except IntegrityError:
+            # ¡Atrapa el error si está en uso!
+            return Response(
+                # Texto personalizado para pasarelas
+                {"detail": "No se puede eliminar esta pasarela porque está siendo utilizada por uno o más cupones de pago."},
+                status=status.HTTP_409_CONFLICT # 409 Conflicto
+            )
+        except Exception as e:
+            # Otros errores
+            return Response(
+                {"detail": f"Error inesperado al intentar eliminar: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 class AdminUpdateCuponEstadoAPI(APIView):
     """
     API para que un admin actualice el estado de un CuponPago específico.
@@ -258,22 +367,27 @@ class AdminUpdateCuponEstadoAPI(APIView):
     """
     permission_classes = [IsAdminUser]
 
+    @transaction.atomic
     def patch(self, request, pk): # pk es el ID del CUPÓN
         try:
-            # Busca el nuevo ID de estado del cuerpo de la petición
             nuevo_estado_id = request.data.get('estado_cupon_id')
             if not nuevo_estado_id:
                 return Response({"error": "Falta 'estado_cupon_id'."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Busca el estado y el cupón
-            nuevo_estado = get_object_or_404(EstadoCupon, id=nuevo_estado_id)
-            cupon = get_object_or_404(CuponPago, pk=pk)
+            nuevo_estado_cupon = get_object_or_404(EstadoCupon, id=nuevo_estado_id)
+            cupon = get_object_or_404(CuponPago.objects.prefetch_related('cuotas_incluidas'), pk=pk)
             
-            # Actualiza y guarda
-            cupon.estado_cupon = nuevo_estado
+            cupon.estado_cupon = nuevo_estado_cupon
             cupon.save()
             
-            # Devuelve el cupón actualizado
+            if nuevo_estado_cupon.nombre == 'Pagado':
+                try:
+                    estado_cuota_pagada = EstadoCuota.objects.get(nombre='Pagada')
+                    cupon.cuotas_incluidas.update(estado_cuota=estado_cuota_pagada)
+
+                except EstadoCuota.DoesNotExist:
+                    return Response({"error": "El estado 'Pagada' no existe en la tabla EstadoCuota. No se pudo completar la operación."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
             serializer = CuponPagoListSerializer(cupon)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -282,4 +396,58 @@ class AdminUpdateCuponEstadoAPI(APIView):
         except Exception as e:
             print(traceback.format_exc())
             return Response({"error": f"Error inesperado: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-# --- FIN NUEVA VISTA ---
+
+
+class PasarelasDisponiblesAPI(generics.ListAPIView):
+    """
+    API simple de SOLO LECTURA para que el alumno
+    vea las pasarelas de pago disponibles.
+    """
+    permission_classes = [IsAuthenticated] # Solo usuarios logueados
+    queryset = PasarelaPago.objects.all().order_by('nombre')
+    serializer_class = PasarelaPagoSimpleSerializer # Reutiliza el serializer simple
+
+
+# --- PEGAR ESTA NUEVA CLASE AL FINAL DE TODO views.py ---
+class DescargarCuponPDF(APIView):
+    """
+    Entrega el PDF de un cupón de pago.
+    Llama a pdf_generator si es "Pago Fácil".
+    Redirige si es otra pasarela.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            # Obtenemos el cupón con toda la info relacionada necesaria
+            cupon = get_object_or_404(
+                CuponPago.objects.select_related(
+                    'alumno__perfil', 
+                    'pasarela'
+                ).prefetch_related('cuotas_incluidas'), # Optimizamos consulta
+                pk=pk
+            )
+        except CuponPago.DoesNotExist:
+            return HttpResponse("Cupón no encontrado.", status=404)
+
+        # Validación de seguridad: solo el dueño o un admin pueden ver el cupón
+        if cupon.alumno != request.user and not request.user.is_staff:
+            return HttpResponse("No tienes permiso para acceder a este cupón.", status=403)
+
+        # --- LÓGICA CONDICIONAL (MUCHO MÁS LIMPIA) ---
+        if cupon.pasarela.nombre.lower() == 'pago fácil':
+            # 1. Es Pago Fácil: Llamar al generador
+            try:
+                buffer = generate_pago_facil_pdf(cupon)
+                
+                filename = f"cupon_pago_{cupon.id}.pdf"
+                # 'inline' abre el PDF en el navegador
+                return HttpResponse(buffer, content_type='application/pdf', headers={'Content-Disposition': f'inline; filename="{filename}"'})
+            
+            except Exception as e:
+                print(f"Error al generar PDF: {e}")
+                return HttpResponse(f"Error al generar el PDF: {e}", status=500)
+
+        else:
+            # 2. Es otra pasarela: Redirigir a cupón genérico (simulación)
+            return redirect('http://localhost:3000/cupon_ejemplo.pdf')

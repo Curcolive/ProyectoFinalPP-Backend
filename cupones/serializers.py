@@ -27,6 +27,17 @@ class EstadoCuponSerializer(serializers.ModelSerializer):
         model = EstadoCupon # Usa el modelo EstadoCupon
         fields = ['id', 'nombre', 'descripcion'] # Define los campos
 
+# --- AÑADE ESTA CLASE ---
+class PasarelaPagoSerializer(serializers.ModelSerializer):
+    """
+    Serializer completo para el CRUD de PasarelaPago.
+    Maneja 'id', 'nombre' y 'descripcion'.
+    """
+    class Meta:
+        model = PasarelaPago # <-- CAMBIO
+        fields = ['id', 'nombre', 'descripcion'] # Mismos campos
+# --- FIN DE LA CLASE A AÑADIR ---
+
 class PasarelaPagoSimpleSerializer(serializers.ModelSerializer):
     class Meta:
         model = PasarelaPago
@@ -70,12 +81,14 @@ class GenerarCuponSerializer(serializers.Serializer):
         min_length=1
     )
     idempotency_key = serializers.UUIDField()
+    pasarela_id = serializers.IntegerField()
 
 class CuponPagoGeneradoSerializer(serializers.ModelSerializer):
     """ Serializer para la respuesta de éxito al generar cupón """
+    pasarela = PasarelaPagoSimpleSerializer(read_only=True)
     class Meta:
         model = CuponPago
-        fields = ['id', 'monto_total', 'fecha_vencimiento', 'url_pdf'] # Incluye url_pdf
+        fields = ['id', 'monto_total', 'fecha_vencimiento', 'url_pdf', 'pasarela'] # Incluye url_pdf
 
 
 # --- SERIALIZER MODIFICADO PARA LISTAS (Historial Alumno y Gestión Admin) ---
