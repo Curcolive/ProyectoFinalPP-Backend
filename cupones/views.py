@@ -42,10 +42,6 @@ User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
 
 class PasswordResetRequestView(APIView):
-  """
-  POST /api/password-reset/request/
-  body: { "email": "user@example.com" }
-  """
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -80,10 +76,6 @@ class PasswordResetRequestView(APIView):
 
 
 class PasswordResetConfirmView(APIView):
-  """
-  POST /api/password-reset/confirm/
-  body: { "uid": "...", "token": "...", "new_password": "nueva_clave" }
-  """
     permission_classes = [AllowAny]
 
     def post(self, request):
