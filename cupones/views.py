@@ -8,16 +8,22 @@ from django.utils.encoding import force_bytes
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.contrib.auth.models import User
+from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError 
 from django.db import transaction 
 from django.db.models import Count, Q 
 
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework import generics 
+
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
 from datetime import timedelta
 import traceback
 
@@ -40,6 +46,86 @@ from .serializers import (
 
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
+
+class CompleteProfileView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        user_id = request.data.get("user_id")
+        username = request.data.get("username")
+        first_name = request.data.get("first_name")
+        last_name = request.data.get("last_name")
+        password = request.data.get("password")
+
+        if not all([user_id, username, first_name, last_name, password]):
+            return Response({"detail": "Todos los campos son obligatorios."}, status=400)
+
+        User = get_user_model()
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": "Usuario no encontrado."}, status=404)
+
+        user.username = username
+        user.first_name = first_name
+        user.last_name = last_name
+        user.set_password(password)
+        user.save()
+
+        return Response({"detail": "Perfil completado exitosamente."})
+
+class GoogleLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        credential = request.data.get("credential")
+        if not credential:
+            return Response({"detail": "Falta el token de Google."}, status=400)
+
+        try:
+            idinfo = id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                settings.GOOGLE_CLIENT_ID
+            )
+        except Exception:
+            return Response({"detail": "Token de Google inválido."}, status=400)
+
+        email = idinfo.get("email")
+        given_name = idinfo.get("given_name", "")
+        family_name = idinfo.get("family_name", "")
+
+        if not email:
+            return Response({"detail": "No se obtuvo email."}, status=400)
+
+        User = get_user_model()
+
+        user, created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": email, 
+                "first_name": given_name,
+                "last_name": family_name,
+            }
+        )
+
+        require_password = user.has_usable_password() == False
+
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username
+            },
+            "just_created": created,
+            "require_password": require_password
+        })
 
 class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
@@ -87,24 +173,34 @@ class PasswordResetConfirmView(APIView):
             status=status.HTTP_200_OK,
         )
 
-class SignupView(generics.CreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = SignupSerializer
+class SignupView(APIView):
     permission_classes = [AllowAny]
 
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+    def post(self, request):
+        data = request.data
+
+        required_fields = ["username", "first_name", "last_name", "email", "password"]
+        for f in required_fields:
+            if not data.get(f):
+                return Response({"detail": f"El campo {f} es obligatorio."}, status=400)
+
+        if User.objects.filter(username=data["username"]).exists():
+            return Response({"detail": "El usuario ya existe."}, status=400)
+
+        if User.objects.filter(email=data["email"]).exists():
+            return Response({"detail": "Ese email ya está registrado."}, status=400)
+
+        user = User.objects.create(
+            username=data["username"],
+            first_name=data["first_name"],
+            last_name=data["last_name"],
+            email=data["email"],
+            password=make_password(data["password"]),
+        )
 
         return Response(
-            {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "message": "Usuario creado correctamente",
-            },
-            status=status.HTTP_201_CREATED,
+            {"detail": "Usuario creado correctamente."},
+            status=status.HTTP_201_CREATED
         )
 
 class ListaCuotasPendientesAPI(APIView):

@@ -20,6 +20,8 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = [host.strip() for host in os.getenv('ALLOWED_HOSTS', '').split(',') if host.strip()]
 
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 DEFAULT_FROM_EMAIL = "no-reply@tusitio.com"
 FRONTEND_URL = "https://proyecto-final-pp-front.vercel.app"
