@@ -86,7 +86,7 @@ class GoogleLoginView(APIView):
             idinfo = id_token.verify_oauth2_token(
                 credential,
                 google_requests.Request(),
-                settings.GOOGLE_CLIENT_ID
+                settings.GOOGLE_CLIENT_ID,
             )
         except Exception:
             return Response({"detail": "Token de Google inválido."}, status=400)
@@ -96,36 +96,41 @@ class GoogleLoginView(APIView):
         family_name = idinfo.get("family_name", "")
 
         if not email:
-            return Response({"detail": "No se obtuvo email."}, status=400)
-
-        User = get_user_model()
+            return Response({"detail": "No se obtuvo email desde Google."}, status=400)
 
         user, created = User.objects.get_or_create(
             email=email,
             defaults={
-                "username": email, 
+                "username": email,  # temporal, luego lo cambia en completar perfil
                 "first_name": given_name,
                 "last_name": family_name,
-            }
+            },
         )
 
-        require_password = user.has_usable_password() == False
+        if created:
+            user.set_unusable_password()
+            user.save()
+
+        require_password = not user.has_usable_password()
 
         refresh = RefreshToken.for_user(user)
 
-        return Response({
-            "refresh": str(refresh),
-            "access": str(refresh.access_token),
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "username": user.username
+        return Response(
+            {
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+                "just_created": created,
+                "require_password": require_password,
             },
-            "just_created": created,
-            "require_password": require_password
-        })
+            status=status.HTTP_200_OK,
+        )
 
 class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
