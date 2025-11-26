@@ -101,7 +101,7 @@ class GoogleLoginView(APIView):
         user, created = User.objects.get_or_create(
             email=email,
             defaults={
-                "username": email,  # temporal, luego lo cambia en completar perfil
+                "username": email,
                 "first_name": given_name,
                 "last_name": family_name,
             },
