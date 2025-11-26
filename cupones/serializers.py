@@ -1,11 +1,7 @@
 from rest_framework import serializers
-# Importa User y tu modelo Perfil
 from django.contrib.auth.models import User
-from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil # <-- Asegúrate que Perfil esté aquí
-# Importa lo necesario para el serializer de Token personalizado
+from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
-# --- Serializers Simples para Campos Relacionados ---
 
 class EstadoCuotaSerializer(serializers.ModelSerializer):
     """ Traduce EstadoCuota a JSON (solo nombre) """
@@ -16,7 +12,7 @@ class EstadoCuotaSerializer(serializers.ModelSerializer):
 class EstadoCuponSimpleSerializer(serializers.ModelSerializer):
     class Meta:
         model = EstadoCupon
-        fields = ['id', 'nombre'] # <-- ¡AÑADE 'id'!
+        fields = ['id', 'nombre']
 
 class EstadoCuponSerializer(serializers.ModelSerializer):
     """
@@ -119,7 +115,6 @@ class CuponPagoListSerializer(serializers.ModelSerializer):
 # --- FIN SERIALIZER MODIFICADO ---
 
 
-# --- SERIALIZER PERSONALIZADO PARA TOKEN JWT ---
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -135,4 +130,17 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         data['username'] = self.user.username
         data['is_staff'] = self.user.is_staff
         return data
-# --- FIN SERIALIZER PERSONALIZADO ---
+
+class SignupSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "email", "password"]
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = User(**validated_data)
+        user.set_password(password)  # guarda la pass encriptada
+        user.save()
+        return user

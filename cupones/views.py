@@ -1,6 +1,5 @@
-from django.http import HttpResponse # <-- Solo necesitas HttpResponse
+from django.http import HttpResponse
 from django.shortcuts import redirect, get_object_or_404
-# --- IMPORTA TU NUEVO GENERADOR ---
 from .pdf_generator import generate_pago_facil_pdf
 
 from rest_framework.views import APIView
@@ -14,7 +13,6 @@ from rest_framework import generics
 from .serializers import PasarelaPagoSimpleSerializer 
 import traceback
 
-# Importaciones de tus modelos y serializers
 from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, CuponPagoCuota, Perfil
 from .serializers import (
     CuotaSerializer,
@@ -24,16 +22,33 @@ from .serializers import (
     MyTokenObtainPairSerializer, 
     EstadoCuponSerializer,       
     PasarelaPagoSerializer,
-    EstadoCuponSimpleSerializer
+    EstadoCuponSimpleSerializer,
+    SignupSerializer
 )
 
-# Otras importaciones de Python/Django
 from django.utils import timezone
 from datetime import timedelta
 from django.db import transaction 
-# --- VISTA PERSONALIZADA PARA OBTENER TOKEN ---
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+class SignupView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = SignupSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        return Response(
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "message": "Usuario creado correctamente",
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 class ListaCuotasPendientesAPI(APIView):
     """ API para obtener la lista de cuotas pendientes del alumno. """
