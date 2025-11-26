@@ -96,6 +96,7 @@ class PasswordResetConfirmView(APIView):
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = SignupSerializer
+    permission_classes = [AllowAny]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
