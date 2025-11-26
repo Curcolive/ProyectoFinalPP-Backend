@@ -1,19 +1,28 @@
 from django.http import HttpResponse
 from django.shortcuts import redirect, get_object_or_404
-from .pdf_generator import generate_pago_facil_pdf
+from django.conf import settings
+from django.core.mail import send_mail
+from django.utils import timezone
+from django.utils.http import urlsafe_base64_encode
+from django.utils.encoding import force_bytes
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.contrib.auth.models import User
+from django.db import IntegrityError 
+from django.db import transaction 
+from django.db.models import Count, Q 
 
+from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
-from django.contrib.auth.models import User
-from django.db import IntegrityError 
-from django.db.models import Count, Q 
 from rest_framework import generics 
-from .serializers import PasarelaPagoSimpleSerializer 
+from datetime import timedelta
 import traceback
 
 from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, CuponPagoCuota, Perfil
+from .pdf_generator import generate_pago_facil_pdf
 from .serializers import (
     CuotaSerializer,
     GenerarCuponSerializer,
@@ -22,14 +31,67 @@ from .serializers import (
     MyTokenObtainPairSerializer, 
     EstadoCuponSerializer,       
     PasarelaPagoSerializer,
+    PasarelaPagoSimpleSerializer,
     EstadoCuponSimpleSerializer,
-    SignupSerializer
+    SignupSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetConfirmSerializer,
 )
 
-from django.utils import timezone
-from datetime import timedelta
-from django.db import transaction 
-from rest_framework_simplejwt.views import TokenObtainPairView
+User = get_user_model()
+token_generator = PasswordResetTokenGenerator()
+
+class PasswordResetRequestView(APIView):
+  """
+  POST /api/password-reset/request/
+  body: { "email": "user@example.com" }
+  """
+
+  def post(self, request):
+      serializer = PasswordResetRequestSerializer(data=request.data)
+      serializer.is_valid(raise_exception=True)
+      email = serializer.validated_data["email"]
+
+      try:
+          user = User.objects.get(email=email)
+      except User.DoesNotExist:
+          return Response(
+              {"message": "Si el correo existe, se enviará un enlace de recuperación."},
+              status=status.HTTP_200_OK,
+          )
+
+      uid = urlsafe_base64_encode(force_bytes(user.pk))
+      token = token_generator.make_token(user)
+
+      frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
+      reset_link = f"{frontend_url}/reset-password?uid={uid}&token={token}"
+
+      subject = "Recuperar contraseña"
+      message = f"Hola {user.username},\n\nPara restablecer tu contraseña haz clic en el siguiente enlace:\n{reset_link}\n\nSi no solicitaste este cambio, ignora este correo."
+      from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+
+      send_mail(subject, message, from_email, [user.email])
+
+      return Response(
+          {"message": "Si el correo existe, se enviará un enlace de recuperación."},
+          status=status.HTTP_200_OK,
+      )
+
+
+class PasswordResetConfirmView(APIView):
+  """
+  POST /api/password-reset/confirm/
+  body: { "uid": "...", "token": "...", "new_password": "nueva_clave" }
+  """
+
+  def post(self, request):
+      serializer = PasswordResetConfirmSerializer(data=request.data)
+      serializer.is_valid(raise_exception=True)
+      serializer.save()
+      return Response(
+          {"message": "Contraseña actualizada correctamente."},
+          status=status.HTTP_200_OK,
+      )
 
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()

@@ -1,7 +1,48 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+User = get_user_model()
+token_generator = PasswordResetTokenGenerator()
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+  email = serializers.EmailField()
+
+  def validate_email(self, value):
+      return value
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+  uid = serializers.CharField()
+  token = serializers.CharField()
+  new_password = serializers.CharField(min_length=8, write_only=True)
+
+  def validate(self, attrs):
+      uid = attrs.get("uid")
+      token = attrs.get("token")
+      new_password = attrs.get("new_password")
+
+      try:
+          user_id = urlsafe_base64_decode(uid).decode()
+          user = User.objects.get(pk=user_id)
+      except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+          raise serializers.ValidationError("Enlace inválido o expirado.")
+
+      if not token_generator.check_token(user, token):
+          raise serializers.ValidationError("Enlace inválido o expirado.")
+
+      attrs["user"] = user
+      return attrs
+
+  def save(self, **kwargs):
+      user = self.validated_data["user"]
+      new_password = self.validated_data["new_password"]
+      user.set_password(new_password)
+      user.save()
+      return user
 
 class EstadoCuotaSerializer(serializers.ModelSerializer):
     """ Traduce EstadoCuota a JSON (solo nombre) """
@@ -20,51 +61,41 @@ class EstadoCuponSerializer(serializers.ModelSerializer):
     Maneja 'id', 'nombre' y 'descripcion'.
     """
     class Meta:
-        model = EstadoCupon # Usa el modelo EstadoCupon
-        fields = ['id', 'nombre', 'descripcion'] # Define los campos
+        model = EstadoCupon 
+        fields = ['id', 'nombre', 'descripcion'] 
 
-# --- AÑADE ESTA CLASE ---
 class PasarelaPagoSerializer(serializers.ModelSerializer):
     """
     Serializer completo para el CRUD de PasarelaPago.
     Maneja 'id', 'nombre' y 'descripcion'.
     """
     class Meta:
-        model = PasarelaPago # <-- CAMBIO
-        fields = ['id', 'nombre', 'descripcion'] # Mismos campos
-# --- FIN DE LA CLASE A AÑADIR ---
+        model = PasarelaPago
+        fields = ['id', 'nombre', 'descripcion']
 
 class PasarelaPagoSimpleSerializer(serializers.ModelSerializer):
     class Meta:
         model = PasarelaPago
-        fields = ['id', 'nombre'] # <-- ¡AÑADE 'id'!
+        fields = ['id', 'nombre']
 
-# --- SERIALIZER PARA DATOS BÁSICOS DEL ALUMNO (EL QUE FALTABA) ---
 class AlumnoSimpleSerializer(serializers.ModelSerializer):
     """ Serializer para mostrar info básica del alumno, incluyendo DNI/Legajo/Carrera. """
-    # Lee los campos directamente desde el modelo Perfil relacionado
     dni = serializers.CharField(source='perfil.dni', read_only=True, allow_null=True)
     legajo = serializers.CharField(source='perfil.legajo', read_only=True, allow_null=True)
     carrera = serializers.CharField(source='perfil.carrera', read_only=True, allow_null=True)
-    nombre_completo = serializers.SerializerMethodField() # Campo calculado
+    nombre_completo = serializers.SerializerMethodField()
 
     class Meta:
-        model = User # El modelo base es User
-        # Campos a incluir en el JSON
+        model = User 
         fields = ['id', 'username', 'nombre_completo', 'dni', 'legajo', 'carrera']
 
     def get_nombre_completo(self, obj):
-        # Función para obtener 'nombre_completo'
-        full_name = obj.get_full_name() # Intenta obtener "Nombre Apellido"
-        return full_name if full_name else obj.username # Si no hay nombre/apellido, usa username
-# --- FIN SERIALIZER ALUMNO ---
-
-
-# --- Serializers Principales ---
+        full_name = obj.get_full_name()
+        return full_name if full_name else obj.username
 
 class CuotaSerializer(serializers.ModelSerializer):
     """ Serializer para la lista de cuotas pendientes del alumno """
-    estado_cuota = EstadoCuotaSerializer(read_only=True) # Anida el nombre del estado
+    estado_cuota = EstadoCuotaSerializer(read_only=True)
 
     class Meta:
         model = Cuota
@@ -84,27 +115,22 @@ class CuponPagoGeneradoSerializer(serializers.ModelSerializer):
     pasarela = PasarelaPagoSimpleSerializer(read_only=True)
     class Meta:
         model = CuponPago
-        fields = ['id', 'monto_total', 'fecha_vencimiento', 'url_pdf', 'pasarela'] # Incluye url_pdf
+        fields = ['id', 'monto_total', 'fecha_vencimiento', 'url_pdf', 'pasarela'] 
 
-
-# --- SERIALIZER MODIFICADO PARA LISTAS (Historial Alumno y Gestión Admin) ---
 class CuponPagoListSerializer(serializers.ModelSerializer):
     """
     Serializer para mostrar la lista de cupones generados.
     Ahora incluye detalles del alumno usando AlumnoSimpleSerializer.
     """
-    estado_cupon = EstadoCuponSimpleSerializer(read_only=True) # Muestra nombre del estado
-    pasarela = PasarelaPagoSimpleSerializer(read_only=True) # Muestra nombre de pasarela
-    # --- CAMBIO: Usa AlumnoSimpleSerializer ---
-    alumno = AlumnoSimpleSerializer(read_only=True) # Muestra objeto alumno con DNI, etc.
-    # -------------------------------------------
+    estado_cupon = EstadoCuponSimpleSerializer(read_only=True)
+    pasarela = PasarelaPagoSimpleSerializer(read_only=True)
+    alumno = AlumnoSimpleSerializer(read_only=True) 
 
     class Meta:
         model = CuponPago
-        # Incluye el campo 'alumno' en la lista de fields
         fields = [
             'id',
-            'alumno', # <-- CAMBIO: Ahora devolverá { id, username, nombre_completo, dni, ... }
+            'alumno',
             'fecha_generacion',
             'fecha_vencimiento',
             'monto_total',
@@ -112,21 +138,17 @@ class CuponPagoListSerializer(serializers.ModelSerializer):
             'estado_cupon',
             'url_pdf'
         ]
-# --- FIN SERIALIZER MODIFICADO ---
-
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        # Añade claims personalizados al payload del token
         token['username'] = user.username
         token['is_staff'] = user.is_staff
         return token
 
     def validate(self, attrs):
         data = super().validate(attrs)
-        # Añade datos extra a la RESPUESTA del login
         data['username'] = self.user.username
         data['is_staff'] = self.user.is_staff
         return data
@@ -141,6 +163,6 @@ class SignupSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop("password")
         user = User(**validated_data)
-        user.set_password(password)  # guarda la pass encriptada
+        user.set_password(password)
         user.save()
         return user
