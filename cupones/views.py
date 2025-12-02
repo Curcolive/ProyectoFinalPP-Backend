@@ -12,7 +12,9 @@ from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError 
 from django.db import transaction 
 from django.db.models import Count, Q 
+from django_filters.rest_framework import DjangoFilterBackend
 
+from rest_framework.generics import ListAPIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -20,6 +22,8 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework import generics 
+from rest_framework.filters import OrderingFilter
+from rest_framework.pagination import PageNumberPagination
 
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -27,7 +31,9 @@ from google.auth.transport import requests as google_requests
 from datetime import timedelta
 import traceback
 
-from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, CuponPagoCuota, Perfil
+from .logging_utils import create_log, log_action
+
+from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, CuponPagoCuota, Perfil, SystemLog
 from .pdf_generator import generate_pago_facil_pdf
 from .serializers import (
     CuotaSerializer,
@@ -42,7 +48,24 @@ from .serializers import (
     SignupSerializer,
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
+    SystemLogSerializer,
 )
+
+class LogsPagination(PageNumberPagination):
+    page_size = 30
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+class SystemLogListAPI(ListAPIView):
+    permission_classes = [IsAdminUser] 
+    serializer_class = SystemLogSerializer
+    queryset = SystemLog.objects.all()
+    pagination_class = LogsPagination
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['user', 'action']
+    ordering_fields = ['timestamp']
+    ordering = ['-timestamp']
 
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
@@ -80,6 +103,7 @@ class GoogleLoginView(APIView):
     def post(self, request):
         credential = request.data.get("credential")
         if not credential:
+            log_action(None, SystemLog.ACTION_LOGIN_FAIL, "Google login sin token")
             return Response({"detail": "Falta el token de Google."}, status=400)
 
         try:
@@ -89,6 +113,7 @@ class GoogleLoginView(APIView):
                 settings.GOOGLE_CLIENT_ID,
             )
         except Exception:
+            log_action(None, SystemLog.ACTION_LOGIN_FAIL, "Token inválido de Google")
             return Response({"detail": "Token de Google inválido."}, status=400)
 
         email = idinfo.get("email")
@@ -96,6 +121,7 @@ class GoogleLoginView(APIView):
         family_name = idinfo.get("family_name", "")
 
         if not email:
+            log_action(None, SystemLog.ACTION_LOGIN_FAIL, "Login Google sin email")
             return Response({"detail": "No se obtuvo email desde Google."}, status=400)
 
         user, created = User.objects.get_or_create(
@@ -110,8 +136,9 @@ class GoogleLoginView(APIView):
         if created:
             user.set_unusable_password()
             user.save()
-
-        require_password = not user.has_usable_password()
+            log_action(user, SystemLog.ACTION_LOGIN, "Nuevo usuario creado desde Google")
+        else:
+            log_action(user, SystemLog.ACTION_LOGIN, "Login Google exitoso")
 
         refresh = RefreshToken.for_user(user)
 
@@ -127,10 +154,11 @@ class GoogleLoginView(APIView):
                     "last_name": user.last_name,
                 },
                 "just_created": created,
-                "require_password": require_password,
+                "require_password": not user.has_usable_password(),
             },
             status=status.HTTP_200_OK,
         )
+
 
 class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
@@ -253,9 +281,10 @@ class GenerarCuponAPI(APIView):
         pasarela_id = serializer_in.validated_data['pasarela_id']
 
         try:
-            # 1. Lógica de Idempotencia (sin cambios)
             cupon_existente = CuponPago.objects.filter(idempotency_key=idempotency_key).first()
             if cupon_existente:
+                log_action(request.user, SystemLog.ACTION_COUPON,
+                        f"Reutiliza cupón existente ID={cupon_existente.id}")
                 serializer_out = CuponPagoGeneradoSerializer(cupon_existente)
                 return Response(serializer_out.data, status=status.HTTP_200_OK)
 
@@ -265,28 +294,31 @@ class GenerarCuponAPI(APIView):
             )
 
             if len(cuotas_a_pagar) != len(cuotas_ids):
-                return Response({"error": "Una o más cuotas no se encontraron o no pertenecen a este usuario."}, status=status.HTTP_404_NOT_FOUND)
+                log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                        f"Cuotas inválidas: {cuotas_ids}")
+                return Response({"error": "Una o más cuotas no se encontraron o no pertenecen a este usuario."},
+                                status=status.HTTP_404_NOT_FOUND)
 
             estado_activo = EstadoCupon.objects.get(nombre="Activo")
             pasarela_obj = get_object_or_404(PasarelaPago, id=pasarela_id)
 
-            # 2. Lógica de Cupón Activo Existente (sin cambios)
             cupon_existente_activo = CuponPago.objects.filter(
                 estado_cupon=estado_activo,
                 cuotas_incluidas__in=cuotas_a_pagar
             ).distinct().first()
 
             if cupon_existente_activo:
+                log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                        f"Ya existía cupón activo ID={cupon_existente_activo.id}")
                 serializer_out = CuponPagoGeneradoSerializer(cupon_existente_activo)
                 return Response(
                     {
                         "error": "Ya existe un cupón activo para una o más de estas cuotas.",
                         "cupon_existente": serializer_out.data
-                    }, 
+                    },
                     status=status.HTTP_409_CONFLICT
                 )
 
-            # 3. Creación del Cupón (sin cambios)
             monto_total = sum(cuota.monto for cuota in cuotas_a_pagar)
             vencimiento = timezone.now().date() + timedelta(days=7)
 
@@ -298,12 +330,8 @@ class GenerarCuponAPI(APIView):
                 fecha_vencimiento=vencimiento,
                 idempotency_key=idempotency_key
             )
-            
-            # --- ¡AQUÍ ESTÁ LA CORRECCIÓN! ---
-            # Cambiamos el prefijo de '/api/' a '/cupones/'
+
             nuevo_cupon.url_pdf = f'/cupones/cupon/{nuevo_cupon.id}/descargar/'
-            # --- FIN DE LA CORRECCIÓN ---
-            
             nuevo_cupon.save(update_fields=['url_pdf'])
 
             for cuota in cuotas_a_pagar:
@@ -313,16 +341,18 @@ class GenerarCuponAPI(APIView):
                     monto_cuota=cuota.monto
                 )
 
+            log_action(request.user, SystemLog.ACTION_COUPON,
+                    f"Generado cupón ID={nuevo_cupon.id}, total={monto_total}")
+
             serializer_out = CuponPagoGeneradoSerializer(nuevo_cupon)
             return Response(serializer_out.data, status=status.HTTP_201_CREATED)
 
-        except EstadoCupon.DoesNotExist:
-            return Response({"error": "Estado 'Activo' no configurado en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        except PasarelaPago.DoesNotExist:
-             return Response({"error": "La pasarela seleccionada no existe."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL, str(e))
             print(traceback.format_exc())
-            return Response({"error": f"Error inesperado en el servidor: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Error inesperado en el servidor: {str(e)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 class HistorialCuponesAPI(APIView):
@@ -451,27 +481,46 @@ class AnularCuponAdminAPI(APIView):
     def patch(self, request, pk):
         motivo = request.data.get('motivo', '').strip()
         if not motivo:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Intento anulación sin motivo - cupon ID={pk}")
             return Response({"error": "El motivo de anulación es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
         
         cupon = get_object_or_404(CuponPago.objects.select_related('estado_cupon'), pk=pk)
         
         if cupon.estado_cupon.nombre == 'Pagado':
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"No se puede anular cupón pagado - ID={pk}")
             return Response({"error": "No se puede anular un cupón que ya está pagado."}, status=status.HTTP_409_CONFLICT)
+
         if cupon.estado_cupon.nombre == 'Anulado':
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Intento anular cupón ya anulado - ID={pk}")
             return Response({"mensaje": "Este cupón ya se encuentra anulado."}, status=status.HTTP_200_OK)
-        
+
         try:
             estado_anulado = EstadoCupon.objects.get(nombre='Anulado')
             cupon.estado_cupon = estado_anulado
             cupon.motivo_anulacion = motivo
             cupon.save()
+
+            log_action(request.user, SystemLog.ACTION_COUPON_CANCEL,
+                       f"Cupón ID={pk} anulado. Motivo={motivo}")
+
             serializer = CuponPagoListSerializer(cupon)
             return Response(serializer.data, status=status.HTTP_200_OK)
+
         except EstadoCupon.DoesNotExist:
-            return Response({"error": "El estado 'Anulado' no está configurado en la base de datos."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Estado 'Anulado' no existe en BD al anular ID={pk}")
+            return Response({"error": "El estado 'Anulado' no está configurado en la base de datos."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         except Exception as e:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Error inesperado al anular cupón ID={pk} - {str(e)}")
             print(traceback.format_exc())
-            return Response({"error": f"Error inesperado al anular el cupón: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Error inesperado al anular el cupón: {str(e)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # --- VIEWSET PARA CRUD DE ESTADO CUPÓN (CON MANEJO DE ERROR DE BORRADO) ---

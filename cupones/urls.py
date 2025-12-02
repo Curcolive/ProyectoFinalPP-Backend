@@ -11,7 +11,8 @@ from .views import (
     PasarelaPagoViewSet,
     PasarelasDisponiblesAPI,
     AdminUpdateCuponEstadoAPI,
-    DescargarCuponPDF
+    DescargarCuponPDF,
+    SystemLogListAPI,
 )
 
 router = DefaultRouter()
@@ -28,6 +29,7 @@ urlpatterns = [
     path('cupon/<int:pk>/descargar/', DescargarCuponPDF.as_view(), name='api_descargar_cupon'),
 
     # --- Rutas de Administrador (manuales) ---
+    path('admin/logs/', SystemLogListAPI.as_view(), name='api_logs'),
     path('admin/gestion/', AdminGestionCuponesAPI.as_view(), name='api_admin_gestion_cupones'),
     path('admin/anular/<int:pk>/', AnularCuponAdminAPI.as_view(), name='api_admin_anular_cupon'),
     path('admin/cupon/<int:pk>/estado/', AdminUpdateCuponEstadoAPI.as_view(), name='api_admin_update_estado',

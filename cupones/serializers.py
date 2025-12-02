@@ -3,9 +3,17 @@ from django.contrib.auth.models import User
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.http import urlsafe_base64_decode
-from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil 
+from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil, SystemLog
+
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+class SystemLogSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField()
+
+    class Meta:
+        model = SystemLog
+        fields = ['id', 'timestamp', 'user', 'action', 'detail']
+        
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
 

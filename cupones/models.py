@@ -1,9 +1,31 @@
 from django.db import models
+from django.conf import settings
 from django.contrib.auth.models import User # El sistema de usuarios de Django
 
 # --- TABLAS "MAESTRAS" O "CATÁLOGO" ---
 # (Las que tu profesora dijo que el admin debe gestionar)
+class SystemLog(models.Model):
+    ACTION_COUPON = "GENERAR_CUPON"
+    ACTION_COUPON_FAIL = "FALLO_CUPON"
+    ACTION_LOGIN_FAIL = "FALLO_LOGIN"
+    ACTION_COUPON_CANCEL = "CUPON_ANULADO"
 
+    timestamp = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    action = models.CharField(max_length=50)
+    detail = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"{self.timestamp} - {self.action} - {self.user}"
+    
 class EstadoCuota(models.Model):
     """
     Define si una cuota está "Pendiente", "Pagada", "Vencida", "Anulada".
