@@ -353,7 +353,59 @@ class GenerarCuponAPI(APIView):
             return Response({"error": f"Error inesperado en el servidor: {str(e)}"},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class AnularCuponAlumnoAPI(APIView):
+    """
+    API para que un ALUMNO anule su propio cupón "Activo".
+    """
+    permission_classes = [IsAuthenticated]
+    @transaction.atomic
+    def patch(self, request, pk):
+        try:
+            estado_anulado = EstadoCupon.objects.get(nombre='Anulado')
+            estado_activo = EstadoCupon.objects.get(nombre='Activo')
+            cupon = CuponPago.objects.select_related('estado_cupon').get(pk=pk)
 
+        except EstadoCupon.DoesNotExist:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Estado 'Anulado' no existe en BD al anular ID={pk}")
+            return Response({"error": "Estados 'Anulado' o 'Activo' no configurados en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except CuponPago.DoesNotExist:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Estado 'Anulado' no existe en BD al anular ID={pk}")
+            return Response({"error": "El cupón no existe."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Error inesperado al anular cupón ID={pk} - {str(e)}")
+            print(traceback.format_exc())
+            return Response({"error": f"Error inesperado al buscar datos: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            if cupon.alumno != request.user:
+                log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"El alumno no tiene permiso para anular este cupón  ID={pk}")
+                return Response({"error": "No tienes permiso para anular este cupón."}, status=status.HTTP_403_FORBIDDEN)
+
+            if cupon.estado_cupon != estado_activo:
+                if cupon.estado_cupon == estado_anulado:
+                    log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                            f"Error , el cupón ya se encuentra anulado. ID={pk} - {str(e)}")
+                    return Response({"mensaje": "Este cupón ya se encuentra anulado."}, status=status.HTTP_200_OK)
+
+                return Response({"error": f"No se puede anular un cupón que no está 'Activo'. Estado actual: {cupon.estado_cupon.nombre}."}, status=status.HTTP_409_CONFLICT)
+
+            cupon.estado_cupon = estado_anulado
+            cupon.motivo_anulacion = "Anulado por el alumno."
+            cupon.save()
+            log_action(request.user, SystemLog.ACTION_COUPON_CANCEL,
+                       f"Cupón ID={pk} anulado. Motivo=Anulado por el alumno.")
+            
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        except Exception as e:
+            log_action(request.user, SystemLog.ACTION_COUPON_FAIL,
+                       f"Error inesperado al anular cupón ID={pk} - {str(e)}")
+            print(traceback.format_exc())
+            return Response({"error": f"Error inesperado al procesar la anulación: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class HistorialCuponesAPI(APIView):
     """ API para el historial de cupones del alumno. """
@@ -370,59 +422,7 @@ class HistorialCuponesAPI(APIView):
             print(traceback.format_exc())
             return Response({"error": f"Error inesperado al buscar historial: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-class AnularCuponAlumnoAPI(APIView):
-    """
-    API para que un ALUMNO anule su propio cupón "Activo".
-    """
-    permission_classes = [IsAuthenticated] # Solo usuarios logueados
 
-    @transaction.atomic
-    def patch(self, request, pk): # 'pk' es el ID del cupón a anular
-        try:
-            # 1. Obtenemos todos los objetos necesarios primero
-            estado_anulado = EstadoCupon.objects.get(nombre='Anulado')
-            estado_activo = EstadoCupon.objects.get(nombre='Activo')
-            
-            # Usamos .get(pk=pk) para poder capturar el error si no existe
-            cupon = CuponPago.objects.select_related('estado_cupon').get(pk=pk)
-
-        except EstadoCupon.DoesNotExist:
-            return Response({"error": "Estados 'Anulado' o 'Activo' no configurados en BD."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        except CuponPago.DoesNotExist:
-            return Response({"error": "El cupón no existe."}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            # Captura cualquier otro error al buscar
-            print(traceback.format_exc())
-            return Response({"error": f"Error inesperado al buscar datos: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # --- Si encontramos todo, procedemos con la lógica ---
-        try:
-            # 3. VALIDACIÓN DE SEGURIDAD 1: Propietario
-            if cupon.alumno != request.user:
-                return Response({"error": "No tienes permiso para anular este cupón."}, status=status.HTTP_403_FORBIDDEN)
-
-            # 4. VALIDACIÓN DE LÓGICA DE NEGOCIO: Estado
-            # El alumno solo puede anular cupones que estén 'Activos'
-            if cupon.estado_cupon != estado_activo:
-                if cupon.estado_cupon == estado_anulado:
-                    return Response({"mensaje": "Este cupón ya se encuentra anulado."}, status=status.HTTP_200_OK)
-                
-                # No se puede anular un cupón Pagado o Vencido
-                return Response({"error": f"No se puede anular un cupón que no está 'Activo'. Estado actual: {cupon.estado_cupon.nombre}."}, status=status.HTTP_409_CONFLICT)
-
-            # 5. Ejecutar la anulación
-            cupon.estado_cupon = estado_anulado
-            cupon.motivo_anulacion = "Anulado por el alumno." # Motivo automático
-            cupon.save()
-            
-            # 6. Devolver éxito
-            # 204 No Content es la respuesta estándar para un PATCH/DELETE exitoso
-            return Response(status=status.HTTP_204_NO_CONTENT)
-
-        except Exception as e:
-            # Este 'except' es para errores DURANTE la lógica de anulación
-            print(traceback.format_exc())
-            return Response({"error": f"Error inesperado al procesar la anulación: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class MyTokenObtainPairView(TokenObtainPairView):
     """ Usa el serializer personalizado para añadir 'username' y 'is_staff' """

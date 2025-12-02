@@ -1,9 +1,8 @@
 from django.db import models
 from django.conf import settings
-from django.contrib.auth.models import User # El sistema de usuarios de Django
+from django.contrib.auth.models import User 
 
 # --- TABLAS "MAESTRAS" O "CATÁLOGO" ---
-# (Las que tu profesora dijo que el admin debe gestionar)
 class SystemLog(models.Model):
     ACTION_COUPON = "GENERAR_CUPON"
     ACTION_COUPON_FAIL = "FALLO_CUPON"
@@ -109,9 +108,7 @@ class CuponPago(models.Model):
     # Campo para el feedback del admin
     motivo_anulacion = models.TextField(blank=True, null=True)
 
-    # --- La relación Muchos-a-Muchos ---
-    # Esto le dice a Django que un Cupón se relaciona con muchas Cuotas
-    # a través del modelo 'CuponPagoCuota' que definimos abajo.
+
     cuotas_incluidas = models.ManyToManyField(
         Cuota,
         through='CuponPagoCuota',
