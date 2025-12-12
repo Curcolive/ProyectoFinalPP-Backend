@@ -79,10 +79,20 @@ class Cuota(models.Model):
     
     periodo = models.CharField(max_length=100) # ej: "Cuota 6/10 - Período 2025"
     monto = models.DecimalField(max_digits=10, decimal_places=2)
+    saldo_pendiente = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     fecha_vencimiento = models.DateField()
-    
+
     def __str__(self):
         return f"Cuota de {self.alumno.username} - {self.periodo}"
+
+class PagoParcial(models.Model):
+    cuota = models.ForeignKey(Cuota, on_delete=models.CASCADE, related_name="pagos_parciales")
+    monto = models.DecimalField(max_digits=10, decimal_places=2)
+    fecha = models.DateTimeField(auto_now_add=True)
+    medio_pago = models.CharField(max_length=100, default="Macro Click")
+
+    def __str__(self):
+        return f"Pago ${self.monto} para Cuota {self.cuota.id}"
 
 class CuponPago(models.Model):
     """
@@ -107,7 +117,8 @@ class CuponPago(models.Model):
     
     # Campo para el feedback del admin
     motivo_anulacion = models.TextField(blank=True, null=True)
-
+   # Indica si es un cupón de pago parcial
+    es_pago_parcial = models.BooleanField(default=False)
 
     cuotas_incluidas = models.ManyToManyField(
         Cuota,

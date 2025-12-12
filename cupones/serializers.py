@@ -3,7 +3,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.http import urlsafe_base64_decode
-from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil, SystemLog
+from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, Perfil, SystemLog, PagoParcial
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -16,6 +16,7 @@ class SystemLogSerializer(serializers.ModelSerializer):
         
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
+
 
 class PasswordResetRequestSerializer(serializers.Serializer):
   email = serializers.EmailField()
@@ -108,7 +109,7 @@ class CuotaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Cuota
-        fields = ['id', 'periodo', 'monto', 'fecha_vencimiento', 'estado_cuota']
+        fields = ['id', 'periodo', 'monto', 'saldo_pendiente' 'fecha_vencimiento', 'estado_cuota']
 
 class GenerarCuponSerializer(serializers.Serializer):
     """ Valida los datos de entrada para generar un cupón (IDs + Key) """
@@ -118,6 +119,10 @@ class GenerarCuponSerializer(serializers.Serializer):
     )
     idempotency_key = serializers.UUIDField()
     pasarela_id = serializers.IntegerField()
+    monto_parcial = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+
+class PagoParcialSerializer(serializers.Serializer):
+   monto = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0.01)
 
 class CuponPagoGeneradoSerializer(serializers.ModelSerializer):
     """ Serializer para la respuesta de éxito al generar cupón """
@@ -145,7 +150,8 @@ class CuponPagoListSerializer(serializers.ModelSerializer):
             'monto_total',
             'pasarela',
             'estado_cupon',
-            'url_pdf'
+            'url_pdf',
+             'es_pago_parcial'
         ]
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):

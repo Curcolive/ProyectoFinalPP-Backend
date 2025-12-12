@@ -13,6 +13,7 @@ from .views import (
     AdminUpdateCuponEstadoAPI,
     DescargarCuponPDF,
     SystemLogListAPI,
+    RegistrarPagoParcialAPI,
 )
 
 router = DefaultRouter()
@@ -25,9 +26,9 @@ urlpatterns = [
     path('historial/', HistorialCuponesAPI.as_view(), name='api_historial_cupones'),
     path('cupon/<int:pk>/anular/', AnularCuponAlumnoAPI.as_view(), name='api_alumno_anular_cupon'),
     path('pasarelas/', PasarelasDisponiblesAPI.as_view(), name='api_pasarelas_disponibles'),
-
     path('cupon/<int:pk>/descargar/', DescargarCuponPDF.as_view(), name='api_descargar_cupon'),
-
+    path('cuota/<int:pk>/pagar/', RegistrarPagoParcialAPI.as_view(), name='api_pago_parcial'),
+    
     # --- Rutas de Administrador (manuales) ---
     path('admin/logs/', SystemLogListAPI.as_view(), name='api_logs'),
     path('admin/gestion/', AdminGestionCuponesAPI.as_view(), name='api_admin_gestion_cupones'),

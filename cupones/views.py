@@ -19,9 +19,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, generics
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
-from rest_framework import generics 
 from rest_framework.filters import OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 
@@ -49,6 +48,7 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
     SystemLogSerializer,
+    PagoParcialSerializer,
 )
 
 class LogsPagination(PageNumberPagination):
@@ -158,7 +158,7 @@ class GoogleLoginView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
+    
 
 class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
@@ -279,6 +279,7 @@ class GenerarCuponAPI(APIView):
         cuotas_ids = serializer_in.validated_data['cuotas_ids']
         idempotency_key = serializer_in.validated_data['idempotency_key']
         pasarela_id = serializer_in.validated_data['pasarela_id']
+        monto_parcial = serializer_in.validated_data.get('monto_parcial', None)
 
         try:
             cupon_existente = CuponPago.objects.filter(idempotency_key=idempotency_key).first()
@@ -318,6 +319,17 @@ class GenerarCuponAPI(APIView):
                     },
                     status=status.HTTP_409_CONFLICT
                 )
+            
+            saldo_total_cuotas = sum(
+                cuota.saldo_pendiente if cuota.saldo_pendiente is not None else cuota.monto 
+                for cuota in cuotas_a_pagar
+            )
+            es_parcial = False
+            if monto_parcial and monto_parcial > 0:
+                monto_final = monto_parcial
+                if monto_parcial < saldo_total_cuotas:
+                    es_parcial = True
+                monto_final = saldo_total_cuotas
 
             monto_total = sum(cuota.monto for cuota in cuotas_a_pagar)
             vencimiento = timezone.now().date() + timedelta(days=7)
@@ -328,7 +340,8 @@ class GenerarCuponAPI(APIView):
                 pasarela=pasarela_obj,
                 monto_total=monto_total,
                 fecha_vencimiento=vencimiento,
-                idempotency_key=idempotency_key
+                idempotency_key=idempotency_key,
+                es_pago_parcial=es_parcial
             )
 
             nuevo_cupon.url_pdf = f'/cupones/cupon/{nuevo_cupon.id}/descargar/'
@@ -346,7 +359,7 @@ class GenerarCuponAPI(APIView):
 
             serializer_out = CuponPagoGeneradoSerializer(nuevo_cupon)
             return Response(serializer_out.data, status=status.HTTP_201_CREATED)
-
+             
         except Exception as e:
             log_action(request.user, SystemLog.ACTION_COUPON_FAIL, str(e))
             print(traceback.format_exc())
@@ -604,8 +617,21 @@ class AdminUpdateCuponEstadoAPI(APIView):
             
             if nuevo_estado_cupon.nombre == 'Pagado':
                 try:
-                    estado_cuota_pagada = EstadoCuota.objects.get(nombre='Pagada')
-                    cupon.cuotas_incluidas.update(estado_cuota=estado_cuota_pagada)
+                 estado_cuota_pagada = EstadoCuota.objects.get(nombre='Pagada')
+                 for cuota in cupon.cuotas_incluidas.all():
+                        if cuota.saldo_pendiente is None:
+                         cuota.saldo_pendiente = cuota.monto 
+                        if cupon.es_pago_parcial:
+                         cupon.cuotas_incluidas.update(estado_cuota=estado_cuota_pagada)
+                         cuota.saldo_pendiente = cuota.saldo_pendiente - cupon.monto_total
+                        if cuota.saldo_pendiente <= 0:
+                                cuota.saldo_pendiente = 0
+                                cuota.estado_cuota = estado_cuota_pagada
+                        else:
+                                cuota.saldo_pendiente = 0
+                                cuota.estado_cuota = estado_cuota_pagada
+                        
+                        cuota.save()
 
                 except EstadoCuota.DoesNotExist:
                     return Response({"error": "El estado 'Pagada' no existe en la tabla EstadoCuota. No se pudo completar la operación."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -673,3 +699,62 @@ class DescargarCuponPDF(APIView):
         else:
             # 2. Es otra pasarela: Redirigir a cupón genérico (simulación)
             return redirect('http://localhost:3000/cupon_ejemplo.pdf')
+class RegistrarPagoParcialAPI(APIView):
+    """
+    API para registrar un pago parcial sobre una cuota.
+    POST /cuotas/<id>/pagar/
+    Recibe: { "monto": 1500.00 }
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        try:
+            cuota = get_object_or_404(Cuota.objects.select_related('estado_cuota', 'alumno'), pk=pk)
+            
+            if cuota.alumno != request.user and not request.user.is_staff:
+                return Response({"error": "No tienes permiso para pagar esta cuota."}, status=status.HTTP_403_FORBIDDEN)
+            
+            serializer = PagoParcialSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            monto_pago = serializer.validated_data['monto']
+        
+            if cuota.saldo_pendiente is None:
+                cuota.saldo_pendiente = cuota.monto
+            
+            if monto_pago > cuota.saldo_pendiente:
+                return Response(
+                    {"error": f"El monto ({monto_pago}) excede el saldo pendiente ({cuota.saldo_pendiente})."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            pago = PagoParcial.objects.create(
+                cuota=cuota,
+                monto=monto_pago,
+                medio_pago="Macro Click"
+            )
+            
+            cuota.saldo_pendiente = cuota.saldo_pendiente - monto_pago
+            
+            if cuota.saldo_pendiente <= 0:
+                try:
+                    estado_pagada = EstadoCuota.objects.get(nombre='Pagada')
+                    cuota.estado_cuota = estado_pagada
+                except EstadoCuota.DoesNotExist:
+                    pass  # Si no existe el estado, solo actualizamos el saldo
+            
+            cuota.save()
+            
+            # 9. Retornar cuota actualizada
+            cuota_serializer = CuotaSerializer(cuota)
+            return Response({
+                "mensaje": "Pago registrado exitosamente.",
+                "pago_id": pago.id,
+                "cuota": cuota_serializer.data
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            print(traceback.format_exc())
+            return Response({"error": f"Error inesperado: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

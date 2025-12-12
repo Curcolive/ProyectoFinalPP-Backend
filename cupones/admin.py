@@ -7,7 +7,7 @@ from .models import (
     PasarelaPago, 
     Cuota, 
     CuponPago,
-    Perfil
+    Perfil,
 )
 
 # --- Configuración Inline para Perfil ---
