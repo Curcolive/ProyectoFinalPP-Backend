@@ -1,30 +1,9 @@
 from django.db import models
-from django.conf import settings
-from django.contrib.auth.models import User 
+from django.contrib.auth.models import User # El sistema de usuarios de Django
 
 # --- TABLAS "MAESTRAS" O "CATÁLOGO" ---
-class SystemLog(models.Model):
-    ACTION_COUPON = "GENERAR_CUPON"
-    ACTION_COUPON_FAIL = "FALLO_CUPON"
-    ACTION_LOGIN_FAIL = "FALLO_LOGIN"
-    ACTION_COUPON_CANCEL = "CUPON_ANULADO"
+# (Las que tu profesora dijo que el admin debe gestionar)
 
-    timestamp = models.DateTimeField(auto_now_add=True)
-    user = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True
-    )
-    action = models.CharField(max_length=50)
-    detail = models.TextField(blank=True)
-
-    class Meta:
-        ordering = ['-timestamp']
-
-    def __str__(self):
-        return f"{self.timestamp} - {self.action} - {self.user}"
-    
 class EstadoCuota(models.Model):
     """
     Define si una cuota está "Pendiente", "Pagada", "Vencida", "Anulada".
@@ -81,11 +60,14 @@ class Cuota(models.Model):
     monto = models.DecimalField(max_digits=10, decimal_places=2)
     saldo_pendiente = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     fecha_vencimiento = models.DateField()
-
+    
     def __str__(self):
         return f"Cuota de {self.alumno.username} - {self.periodo}"
 
 class PagoParcial(models.Model):
+    """
+    Registra un pago parcial realizado sobre una cuota.
+    """
     cuota = models.ForeignKey(Cuota, on_delete=models.CASCADE, related_name="pagos_parciales")
     monto = models.DecimalField(max_digits=10, decimal_places=2)
     fecha = models.DateTimeField(auto_now_add=True)
@@ -117,9 +99,13 @@ class CuponPago(models.Model):
     
     # Campo para el feedback del admin
     motivo_anulacion = models.TextField(blank=True, null=True)
-   # Indica si es un cupón de pago parcial
+    
+    # Indica si es un cupón de pago parcial
     es_pago_parcial = models.BooleanField(default=False)
 
+    # --- La relación Muchos-a-Muchos ---
+    # Esto le dice a Django que un Cupón se relaciona con muchas Cuotas
+    # a través del modelo 'CuponPagoCuota' que definimos abajo.
     cuotas_incluidas = models.ManyToManyField(
         Cuota,
         through='CuponPagoCuota',
