@@ -13,6 +13,13 @@ from django.db.models import Count, Q
 from rest_framework import generics 
 from .serializers import PasarelaPagoSimpleSerializer 
 import traceback
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.core.mail import send_mail
+from django.conf import settings
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 # Importaciones de tus modelos y serializers
 from .models import Cuota, EstadoCuota, CuponPago, EstadoCupon, PasarelaPago, CuponPagoCuota, Perfil, PagoParcial
@@ -558,3 +565,307 @@ class RegistrarPagoParcialAPI(APIView):
         except Exception as e:
             print(traceback.format_exc())
             return Response({"error": f"Error inesperado: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# --- VISTAS DE AUTENTICACIÓN ---
+
+class SignupView(APIView):
+    """
+    Vista para registrar nuevos usuarios.
+    POST: Crea un nuevo usuario con username, first_name, last_name, email y password.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        email = request.data.get('email', '')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response(
+                {"detail": "El nombre de usuario y la contraseña son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if User.objects.filter(username=username).exists():
+            return Response(
+                {"detail": "El nombre de usuario ya está en uso."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if email and User.objects.filter(email=email).exists():
+            return Response(
+                {"detail": "El email ya está registrado."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user = User.objects.create_user(
+                username=username,
+                password=password,
+                email=email,
+                first_name=first_name,
+                last_name=last_name
+            )
+            return Response({
+                "detail": "Usuario creado exitosamente.",
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name
+                }
+            }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            print(traceback.format_exc())
+            return Response(
+                {"detail": f"Error al crear usuario: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class PasswordResetRequestView(APIView):
+    """
+    Vista para solicitar un enlace de recuperación de contraseña.
+    POST: Envía un email con un enlace para restablecer la contraseña.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+
+        if not email:
+            return Response(
+                {"detail": "El email es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Por seguridad, no revelamos si el email existe o no
+            return Response({
+                "message": "Si el email está registrado, recibirás un enlace de recuperación."
+            }, status=status.HTTP_200_OK)
+
+        # Generar token y uid
+        token = default_token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+        # Construir URL de recuperación
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        reset_url = f"{frontend_url}/reset-password?uid={uid}&token={token}"
+
+        # Enviar email (usando el backend configurado en settings.py)
+        try:
+            send_mail(
+                subject="Recuperación de contraseña - Sistema de Cuotas",
+                message=f"Hola {user.first_name or user.username},\n\n"
+                        f"Recibimos una solicitud para restablecer tu contraseña.\n\n"
+                        f"Hacé clic en el siguiente enlace para continuar:\n{reset_url}\n\n"
+                        f"Si no solicitaste esto, ignora este mensaje.\n\n"
+                        f"Saludos,\nEquipo de Soporte",
+                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@example.com'),
+                recipient_list=[email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f"Error al enviar email: {e}")
+            # No fallamos silenciosamente para que el usuario sepa que hubo un problema
+            pass
+
+        return Response({
+            "message": "Si el email está registrado, recibirás un enlace de recuperación."
+        }, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(APIView):
+    """
+    Vista para confirmar el cambio de contraseña.
+    POST: Cambia la contraseña del usuario si el token es válido.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        uid = request.data.get('uid')
+        token = request.data.get('token')
+        new_password = request.data.get('new_password')
+
+        if not uid or not token or not new_password:
+            return Response(
+                {"detail": "Todos los campos son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user_id = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=user_id)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response(
+                {"detail": "Enlace de recuperación inválido."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not default_token_generator.check_token(user, token):
+            return Response(
+                {"detail": "El enlace de recuperación ha expirado o es inválido."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({
+            "message": "Contraseña actualizada correctamente. Ya podés iniciar sesión."
+        }, status=status.HTTP_200_OK)
+
+
+class GoogleLoginView(APIView):
+    """
+    Vista para autenticación con Google OAuth.
+    POST: Valida el token de Google y crea/autentica al usuario.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        credential = request.data.get('credential')
+
+        if not credential:
+            return Response(
+                {"detail": "El token de Google es obligatorio."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Verificar el token de Google
+            google_client_id = getattr(settings, 'GOOGLE_CLIENT_ID', None)
+            if not google_client_id:
+                return Response(
+                    {"detail": "Google OAuth no está configurado."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            idinfo = id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                google_client_id
+            )
+
+            email = idinfo.get('email')
+            first_name = idinfo.get('given_name', '')
+            last_name = idinfo.get('family_name', '')
+
+            if not email:
+                return Response(
+                    {"detail": "No se pudo obtener el email de Google."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Buscar o crear usuario
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    'username': email.split('@')[0],
+                    'first_name': first_name,
+                    'last_name': last_name
+                }
+            )
+
+            if created:
+                # Usuario nuevo: necesita completar perfil (crear contraseña)
+                user.set_unusable_password()
+                user.save()
+                return Response({
+                    "require_password": True,
+                    "user": {
+                        "id": user.id,
+                        "email": user.email,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name
+                    }
+                }, status=status.HTTP_200_OK)
+            else:
+                # Usuario existente: generar tokens JWT
+                from rest_framework_simplejwt.tokens import RefreshToken
+                refresh = RefreshToken.for_user(user)
+                
+                # Añadir claims personalizados
+                refresh['username'] = user.username
+                refresh['is_staff'] = user.is_staff
+
+                return Response({
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "username": user.username,
+                    "is_staff": user.is_staff,
+                    "require_password": False
+                }, status=status.HTTP_200_OK)
+
+        except ValueError as e:
+            print(f"Error verificando token de Google: {e}")
+            return Response(
+                {"detail": "Token de Google inválido."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            print(traceback.format_exc())
+            return Response(
+                {"detail": f"Error al procesar login con Google: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CompleteProfileView(APIView):
+    """
+    Vista para completar el perfil de un usuario nuevo (después de login con Google).
+    POST: Actualiza username, nombre, apellido y establece la contraseña.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        username = request.data.get('username')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        password = request.data.get('password')
+
+        if not user_id or not username or not password:
+            return Response(
+                {"detail": "user_id, username y password son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Usuario no encontrado."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Verificar que el username no esté en uso por otro usuario
+        if User.objects.filter(username=username).exclude(pk=user_id).exists():
+            return Response(
+                {"detail": "El nombre de usuario ya está en uso."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.username = username
+        user.first_name = first_name
+        user.last_name = last_name
+        user.set_password(password)
+        user.save()
+
+        return Response({
+            "detail": "Perfil completado exitosamente.",
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name
+            }
+        }, status=status.HTTP_200_OK)
