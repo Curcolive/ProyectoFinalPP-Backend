@@ -109,7 +109,7 @@ class CuotaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Cuota
-        fields = ['id', 'periodo', 'monto', 'saldo_pendiente' 'fecha_vencimiento', 'estado_cuota']
+        fields = ['id', 'periodo', 'monto', 'saldo_pendiente' , 'fecha_vencimiento', 'estado_cuota']
 
 class GenerarCuponSerializer(serializers.Serializer):
     """ Valida los datos de entrada para generar un cupón (IDs + Key) """
